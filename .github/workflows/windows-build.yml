@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           "workspace=$PWD"
-          $installer = Get-ChildItem -Path . -Recurse -File -Filter "*-x64-setup.exe" | Select-Object -First 1
+          $installer = Get-ChildItem -Path . -Recurse -File -Filter "*_x64-setup.exe" | Select-Object -First 1
           if ($null -eq $installer) { throw "Windows NSIS installer not found" }
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
           "installer=$($installer.FullName)"
@@ -45,9 +45,10 @@ jobs:
           "size=$($installer.Length)"
           New-Item -ItemType Directory -Force -Path "windows-artifacts" | Out-Null
           Copy-Item -LiteralPath $installer.FullName -Destination "windows-artifacts/$($installer.Name)"
+          "copied=$((Get-Item "windows-artifacts/$($installer.Name)").FullName)"
 
       - uses: actions/upload-artifact@v4
         with:
           name: workbuddy-switch-windows-x64
-          path: windows-artifacts/*-x64-setup.exe
+          path: windows-artifacts/*_x64-setup.exe
           if-no-files-found: error
