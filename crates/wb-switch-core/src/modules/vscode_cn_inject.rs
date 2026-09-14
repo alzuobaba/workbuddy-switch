@@ -80,7 +80,9 @@ pub fn codebuddy_cn_state_db_path() -> Option<PathBuf> {
 pub fn resolve_state_db_path(user_data_dir: Option<&Path>) -> Result<PathBuf, String> {
     let root = match user_data_dir {
         Some(p) => p.to_path_buf(),
-        None => codebuddy_cn_data_dir().ok_or_else(|| "无法定位 CodeBuddy CN 数据目录".to_string())?,
+        None => {
+            codebuddy_cn_data_dir().ok_or_else(|| "无法定位 CodeBuddy CN 数据目录".to_string())?
+        }
     };
     let candidates = [
         root.join("User").join("globalStorage").join("state.vscdb"),
@@ -260,7 +262,10 @@ fn get_local_state_path(data_root: &Path) -> Result<PathBuf, String> {
     if path.exists() {
         Ok(path)
     } else {
-        Err(format!("未找到 CodeBuddy CN Local State: {}", path.display()))
+        Err(format!(
+            "未找到 CodeBuddy CN Local State: {}",
+            path.display()
+        ))
     }
 }
 
@@ -275,16 +280,8 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
             cbData: 0,
             pbData: std::ptr::null_mut(),
         };
-        CryptUnprotectData(
-            &mut data_in,
-            None,
-            None,
-            None,
-            None,
-            0,
-            &mut data_out,
-        )
-        .map_err(|e| format!("DPAPI CryptUnprotectData failed: {e}"))?;
+        CryptUnprotectData(&mut data_in, None, None, None, None, 0, &mut data_out)
+            .map_err(|e| format!("DPAPI CryptUnprotectData failed: {e}"))?;
         if data_out.pbData.is_null() || data_out.cbData == 0 {
             return Err("DPAPI returned empty data".to_string());
         }
@@ -298,8 +295,8 @@ fn dpapi_decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(target_os = "windows")]
 fn get_windows_encryption_key(data_root: &Path) -> Result<Vec<u8>, String> {
     let local_state = get_local_state_path(data_root)?;
-    let text = std::fs::read_to_string(&local_state)
-        .map_err(|e| format!("读取 Local State 失败: {e}"))?;
+    let text =
+        std::fs::read_to_string(&local_state).map_err(|e| format!("读取 Local State 失败: {e}"))?;
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析 Local State 失败: {e}"))?;
     let encrypted_key_b64 = json["os_crypt"]["encrypted_key"]
@@ -370,9 +367,8 @@ fn decrypt_secret_payload(encrypted: &[u8], data_root: &Path) -> Result<Vec<u8>,
         let _ = data_root;
         match detect_prefix(encrypted) {
             Some("v11") => {
-                let key = get_linux_v11_key().ok_or_else(|| {
-                    "无法加载 Linux secret storage key（v11）".to_string()
-                })?;
+                let key = get_linux_v11_key()
+                    .ok_or_else(|| "无法加载 Linux secret storage key（v11）".to_string())?;
                 match decrypt_cbc_prefixed(encrypted, V11_PREFIX, &key) {
                     Ok(value) => Ok(value),
                     Err(_) => decrypt_cbc_prefixed(encrypted, V11_PREFIX, &LINUX_EMPTY_KEY),
@@ -461,8 +457,7 @@ pub fn read_codebuddy_cn_secret(user_data_dir: Option<&Path>) -> Result<Option<S
         return Ok(None);
     }
     let data_root = data_root_from_db(&db_path)?.to_path_buf();
-    let conn = Connection::open(&db_path)
-        .map_err(|e| format!("打开 state.vscdb 失败: {e}"))?;
+    let conn = Connection::open(&db_path).map_err(|e| format!("打开 state.vscdb 失败: {e}"))?;
     let key = secret_storage_item_key();
     let raw_value: Option<String> = match conn.query_row(
         "SELECT value FROM ItemTable WHERE key = ?1",
@@ -487,8 +482,7 @@ pub fn inject_codebuddy_cn_secret(
     let db_path = resolve_state_db_path(user_data_dir)?;
     let data_root = data_root_from_db(&db_path)?.to_path_buf();
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 state.vscdb 父目录失败: {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建 state.vscdb 父目录失败: {e}"))?;
     }
     let conn = Connection::open(&db_path).map_err(|e| format!("打开 state.vscdb 失败: {e}"))?;
     conn.execute(
@@ -589,10 +583,8 @@ mod tests {
 
     #[test]
     fn resolve_prefers_existing_candidate() {
-        let dir = std::env::temp_dir().join(format!(
-            "wb-cn-ide-path-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("wb-cn-ide-path-test-{}", uuid::Uuid::new_v4()));
         let db = dir.join("User").join("globalStorage").join("state.vscdb");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
         std::fs::write(&db, b"").unwrap();

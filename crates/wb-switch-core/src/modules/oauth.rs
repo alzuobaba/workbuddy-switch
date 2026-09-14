@@ -8,14 +8,57 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::modules::account;
 use crate::modules::config::{
-    http_request, norm_ts, now_ms, now_secs, OAUTH_TIMEOUT_SECONDS, WORKBUDDY_API_ENDPOINT,
-    WORKBUDDY_API_PREFIX, WORKBUDDY_PLATFORM,
+    http_request, norm_ts, now_ms, now_secs, OAUTH_TIMEOUT_SECONDS, WORKBUDDY_AI_API_ENDPOINT,
+    WORKBUDDY_AI_PLATFORM, WORKBUDDY_API_ENDPOINT, WORKBUDDY_API_PREFIX, WORKBUDDY_PLATFORM,
 };
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OAuthEdition {
+    Cn,
+    Ai,
+}
+
+impl OAuthEdition {
+    fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("ai") | Some("international") | Some("workbuddy-ai") => Self::Ai,
+            _ => Self::Cn,
+        }
+    }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Cn => WORKBUDDY_API_ENDPOINT,
+            Self::Ai => WORKBUDDY_AI_API_ENDPOINT,
+        }
+    }
+
+    fn platform(self) -> &'static str {
+        match self {
+            Self::Cn => WORKBUDDY_PLATFORM,
+            Self::Ai => WORKBUDDY_AI_PLATFORM,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cn => "cn",
+            Self::Ai => "ai",
+        }
+    }
+
+    fn default_domain(self) -> &'static str {
+        match self {
+            Self::Cn => "www.codebuddy.cn",
+            Self::Ai => "www.workbuddy.ai",
+        }
+    }
+}
+
 struct OAuthInfo {
     state: String,
     expires_at: i64,
+    edition: OAuthEdition,
     done: bool,
     result: Option<Value>,
     error: Option<String>,
@@ -27,11 +70,17 @@ fn oauth_states() -> &'static Mutex<HashMap<String, OAuthInfo>> {
     OAUTH_STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 发起登录：向官方申请 state，返回 loginId / verificationUri / expiresIn。
-pub async fn oauth_start() -> Result<Value, String> {
+/// 发起登录：向指定版本的官方服务申请 state，返回 loginId / verificationUri / expiresIn。
+///
+/// `edition` 支持 `cn`（默认）和 `ai` / `international`，旧调用不传参数时保持
+/// 国内版行为不变。
+pub async fn oauth_start(edition: Option<&str>) -> Result<Value, String> {
+    let edition = OAuthEdition::parse(edition);
     let login_id = format!("wb_{}", uuid::Uuid::new_v4().simple());
     let url = format!(
-        "{WORKBUDDY_API_ENDPOINT}{WORKBUDDY_API_PREFIX}/auth/state?platform={WORKBUDDY_PLATFORM}"
+        "{}{WORKBUDDY_API_PREFIX}/auth/state?platform={}",
+        edition.endpoint(),
+        edition.platform()
     );
     let resp = http_request(&url, "POST", Some(json!({})), None).await;
     let data = resp.get("data").cloned().unwrap_or_else(|| json!({}));
@@ -54,7 +103,13 @@ pub async fn oauth_start() -> Result<Value, String> {
         .or_else(|| data.get("auth_url").and_then(|v| v.as_str()))
         .or_else(|| data.get("url").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{WORKBUDDY_API_ENDPOINT}/login?state={state}"));
+        .unwrap_or_else(|| {
+            format!(
+                "{}/login?platform={}&state={state}",
+                edition.endpoint(),
+                edition.platform()
+            )
+        });
 
     let mut map = oauth_states().lock().unwrap();
     map.insert(
@@ -62,7 +117,10 @@ pub async fn oauth_start() -> Result<Value, String> {
         OAuthInfo {
             state,
             expires_at: now_secs() + OAUTH_TIMEOUT_SECONDS,
-            ..Default::default()
+            edition,
+            done: false,
+            result: None,
+            error: None,
         },
     );
     drop(map);
@@ -71,12 +129,13 @@ pub async fn oauth_start() -> Result<Value, String> {
         "loginId": login_id,
         "verificationUri": auth_url,
         "expiresIn": OAUTH_TIMEOUT_SECONDS,
+        "edition": edition.label(),
     }))
 }
 
 /// 轮询一次官方 token 接口。成功则拉取账号信息并入库。
 pub async fn oauth_poll(login_id: &str) -> Value {
-    let state = {
+    let (state, edition) = {
         let mut map = oauth_states().lock().unwrap();
         let Some(info) = map.get_mut(login_id) else {
             return json!({"done": true, "error": "登录请求不存在"});
@@ -89,10 +148,11 @@ pub async fn oauth_poll(login_id: &str) -> Value {
             info.error = Some("登录超时".to_string());
             return json!({"done": true, "error": "登录超时"});
         }
-        info.state.clone()
+        (info.state.clone(), info.edition)
     };
 
-    let url = format!("{WORKBUDDY_API_ENDPOINT}{WORKBUDDY_API_PREFIX}/auth/token?state={state}");
+    let endpoint = edition.endpoint();
+    let url = format!("{endpoint}{WORKBUDDY_API_PREFIX}/auth/token?state={state}");
     let resp = http_request(&url, "GET", None, None).await;
     let code = resp.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     if code != 0 && code != 200 {
@@ -110,17 +170,18 @@ pub async fn oauth_poll(login_id: &str) -> Value {
     }
 
     // 拉取账号信息
-    let account_url =
-        format!("{WORKBUDDY_API_ENDPOINT}{WORKBUDDY_API_PREFIX}/login/account?state={state}");
+    let account_url = format!("{endpoint}{WORKBUDDY_API_PREFIX}/login/account?state={state}");
     let mut headers = HashMap::new();
     headers.insert(
         "Authorization".to_string(),
         format!("Bearer {access_token}"),
     );
-    let domain = data.get("domain").and_then(|v| v.as_str()).unwrap_or("");
-    if !domain.is_empty() {
-        headers.insert("X-Domain".to_string(), domain.to_string());
-    }
+    let domain = data
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| edition.default_domain());
+    headers.insert("X-Domain".to_string(), domain.to_string());
     let acc_resp = http_request(&account_url, "GET", None, Some(&headers)).await;
     let acc_data = acc_resp.get("data").cloned().unwrap_or_else(|| json!({}));
 
@@ -170,6 +231,7 @@ pub async fn oauth_poll(login_id: &str) -> Value {
             .unwrap_or("Bearer")
             .to_string(),
         "domain": domain.to_string(),
+        "edition": edition.label(),
         "expiresAt": expires_at,
         "refreshExpiresAt": refresh_expires_at,
         "auth_raw": data,

@@ -8,19 +8,62 @@ use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
 use crate::modules::account::get_str;
-use crate::modules::config::{atomic_write, backup_dir, now_ms, utc_iso};
+use crate::modules::config::{atomic_write, backup_dir, is_workbuddy_ai_account, now_ms, utc_iso};
 
-/// WorkBuddy 官方认证文件路径（与 cockpit 一致）。
-pub fn auth_file_path() -> PathBuf {
+const CN_AUTH_FILE_NAME: &str = "workbuddy-desktop.info";
+const AI_AUTH_FILE_NAME: &str = "workbuddy-desktop-ai.info";
+
+fn auth_file_name_for_account(account: Option<&Value>) -> &'static str {
+    if account.is_some_and(is_workbuddy_ai_account) {
+        AI_AUTH_FILE_NAME
+    } else {
+        CN_AUTH_FILE_NAME
+    }
+}
+
+fn auth_file_path_for_name(name: &str) -> PathBuf {
     let home = crate::modules::config::home_dir();
     #[cfg(target_os = "macos")]
-    return home.join(
-        "Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info",
-    );
+    return home.join(format!(
+        "Library/Application Support/CodeBuddyExtension/Data/Public/auth/{name}"
+    ));
     #[cfg(target_os = "windows")]
-    return home.join("AppData/Local/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info");
+    return home.join(format!(
+        "AppData/Local/CodeBuddyExtension/Data/Public/auth/{name}"
+    ));
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    return home.join(".local/share/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info");
+    return home.join(format!(
+        ".local/share/CodeBuddyExtension/Data/Public/auth/{name}"
+    ));
+}
+
+/// 当前正在运行客户端的认证文件路径；没有运行中的国际版时回退国内版。
+pub fn auth_file_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let app = crate::modules::process::macos_workbuddy_app_path();
+        if app
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("WorkBuddy AI.app"))
+        {
+            return auth_file_path_for_name(AI_AUTH_FILE_NAME);
+        }
+    }
+    auth_file_path_for_name(CN_AUTH_FILE_NAME)
+}
+
+/// 指定账号对应的认证文件路径，用于切换时不能依赖当前文件名的场景。
+pub fn auth_file_path_for_account(account: &Value) -> PathBuf {
+    auth_file_path_for_name(auth_file_name_for_account(Some(account)))
+}
+
+/// WorkBuddy 官方认证文件路径的候选集合，按国际版优先。
+pub fn auth_file_paths() -> [PathBuf; 2] {
+    [
+        auth_file_path_for_name(AI_AUTH_FILE_NAME),
+        auth_file_path_for_name(CN_AUTH_FILE_NAME),
+    ]
 }
 
 /// WorkBuddy 应用路径。
@@ -49,23 +92,47 @@ pub fn workbuddy_app_path() -> PathBuf {
 /// 读取认证文件 JSON；不存在或解析失败返回 None。
 pub fn read_auth_file() -> Option<Value> {
     let path = auth_file_path();
-    if !path.exists() {
-        return None;
-    }
     let text = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
+/// 读取指定账号对应的认证文件；用于在国内/国际文件并存时避免读错当前文件。
+pub fn read_auth_file_for_account(account: &Value) -> Option<Value> {
+    let path = auth_file_path_for_account(account);
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// 切换前备份当前认证文件，返回备份路径。对照 server.py `backup_auth_file`。
-pub fn backup_auth_file() -> Option<PathBuf> {
-    let path = auth_file_path();
-    if !path.exists() {
+pub fn backup_auth_file_for_account(account: &Value) -> Option<PathBuf> {
+    let path = auth_file_path_for_account(account);
+    if !path.is_file() {
         return None;
     }
     let dir = backup_dir();
     std::fs::create_dir_all(&dir).ok()?;
     let ts = utc_iso();
-    let dest = dir.join(format!("workbuddy-desktop.{ts}.info"));
+    let suffix = if is_workbuddy_ai_account(account) {
+        "-ai"
+    } else {
+        ""
+    };
+    let dest = dir.join(format!("workbuddy-desktop{suffix}.{ts}.info"));
+    std::fs::copy(&path, &dest).ok()?;
+    Some(dest)
+}
+
+/// 兼容旧调用：备份当前检测到的认证文件。
+pub fn backup_auth_file() -> Option<PathBuf> {
+    let path = auth_file_path();
+    if !path.is_file() {
+        return None;
+    }
+    let dir = backup_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let ts = utc_iso();
+    let file_name = path.file_name()?.to_string_lossy();
+    let dest = dir.join(format!("{file_name}.{ts}.info"));
     std::fs::copy(&path, &dest).ok()?;
     Some(dest)
 }
@@ -178,12 +245,15 @@ pub fn build_auth_obj(acc: &Value) -> Value {
 
 /// 把账号写入官方认证文件（原子写 + 写后校验）。对照 server.py `write_account_to_auth_file`。
 pub fn write_account_to_auth_file(acc: &Value) -> Result<(), String> {
-    let path = auth_file_path();
+    let path = auth_file_path_for_account(acc);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let existing = read_auth_file().unwrap_or_else(|| json!({}));
+    let existing = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
     eprintln!(
         "[auth] write_account: existing is_object={} allAccounts_len={}",
         existing.is_object(),
@@ -358,8 +428,8 @@ mod tests {
             "路径应包含 CodeBuddyExtension: {s}"
         );
         assert!(
-            s.ends_with("workbuddy-desktop.info"),
-            "文件名应为 workbuddy-desktop.info: {s}"
+            s.ends_with("workbuddy-desktop-ai.info") || s.ends_with("workbuddy-desktop.info"),
+            "文件名应为国内或国际版认证文件: {s}"
         );
     }
 

@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 
 use crate::modules::account;
 use crate::modules::auth_file;
-use crate::modules::process::{close_workbuddy, launch_workbuddy};
+use crate::modules::config::is_workbuddy_ai_account;
+use crate::modules::process::{close_workbuddy, launch_workbuddy_for_edition};
 use crate::modules::session;
 
 /// 切换进度回调（宿主注入，如 Tauri `app.emit` 或 HTTP 进度缓存）。
@@ -32,7 +33,7 @@ pub fn switch_account(
     progress("开始切换账号…");
     let acc =
         account::find_account(account_id).ok_or_else(|| format!("账号不存在: {account_id}"))?;
-    let backup = auth_file::backup_auth_file();
+    let backup = auth_file::backup_auth_file_for_account(&acc);
 
     let mut copy_report: Option<Value> = None;
     let mut session_report: Option<Value> = None;
@@ -53,7 +54,7 @@ pub fn switch_account(
     auth_file::write_account_to_auth_file(&acc)?;
     if restart {
         progress("正在启动 WorkBuddy…");
-        launch_workbuddy(Some(&progress))?;
+        launch_workbuddy_for_edition(Some(&progress), is_workbuddy_ai_account(&acc))?;
     }
     progress("切换完成");
 

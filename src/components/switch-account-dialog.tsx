@@ -39,6 +39,7 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [currentUid, setCurrentUid] = useState<string | null>(null);
+  const [sessionDiagnostics, setSessionDiagnostics] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
 
   // 监听后端切换进度：桌面端走 Tauri 事件，webui 走 HTTP 轮询
@@ -69,12 +70,20 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
       setSelected(new Set());
       setExpanded(new Set());
       setError("");
+      setSessionDiagnostics(null);
       setLoadingSessions(true);
       api
         .listSessions()
         .then((res) => {
           setSessions(res.sessions);
           setCurrentUid(res.current);
+          const reason = res.diagnostics?.reason;
+          const dbPath = res.dbPath;
+          setSessionDiagnostics(
+            reason && reason !== "ok"
+              ? `${reason}${dbPath ? `：${dbPath}` : ""}`
+              : null,
+          );
         })
         .catch((e) => setError(api.asError(e)))
         .finally(() => setLoadingSessions(false));
@@ -195,9 +204,11 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
     : error && sessionsEmpty
       ? "无法加载会话列表，暂不能复制"
       : sessionsEmpty
-        ? currentUid
-          ? "当前账号暂无会话，无法复制"
-          : "未检测到当前登录账号，无法列出会话"
+        ? sessionDiagnostics?.startsWith("database_missing")
+          ? "未找到当前版本的会话数据库，无法复制"
+          : currentUid
+            ? "当前账号暂无会话，无法复制"
+            : "未检测到当前登录账号，无法列出会话"
         : "将当前账号勾选的会话以新 id 复制给目标账号（云端归属目标）";
 
   return (
@@ -254,7 +265,11 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
                   </div>
                 ) : sessions.length === 0 ? (
                   <p className="py-4 text-center text-sm text-muted-foreground">
-                    {currentUid ? "当前账号暂无会话" : "未检测到当前登录账号，无法列出会话"}
+                    {sessionDiagnostics?.startsWith("database_missing")
+                      ? "未找到当前版本的会话数据库"
+                      : currentUid
+                        ? "当前账号暂无会话"
+                        : "未检测到当前登录账号，无法列出会话"}
                   </p>
                 ) : (
                   buildSessionTree(sessions).map((kind) => {
@@ -349,6 +364,12 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
                 )}
               </div>
             </>
+          )}
+
+          {sessionDiagnostics && sessionsEmpty && (
+            <div className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/20 dark:text-amber-200">
+              会话诊断：{sessionDiagnostics}
+            </div>
           )}
 
           {error && (

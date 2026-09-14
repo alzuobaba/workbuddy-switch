@@ -12,7 +12,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
-import type { AccountMeta } from "@/lib/types";
+import type { AccountMeta, OAuthEdition } from "@/lib/types";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAccountsStore } from "@/stores/accounts";
 
 interface Props {
@@ -25,6 +26,7 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
   const reconcileAccounts = useAccountsStore((s) => s.reconcileAccounts);
 
   const [busy, setBusy] = useState(false);
+  const [edition, setEdition] = useState<OAuthEdition>("cn");
   const [loginId, setLoginId] = useState<string | null>(null);
   const [uri, setUri] = useState("");
   const [error, setError] = useState("");
@@ -34,6 +36,7 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
   useEffect(() => {
     if (open) {
       setBusy(false);
+      setEdition("cn");
       setLoginId(null);
       setUri("");
       setError("");
@@ -78,7 +81,7 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
     setBusy(true);
     setError("");
     try {
-      const res = await api.oauthStart();
+      const res = await api.oauthStart(edition);
       setLoginId(res.loginId);
       setUri(res.verificationUri);
       // 按当前宿主能力打开验证页
@@ -102,6 +105,23 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
 
         {!loginId && !result && (
           <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label htmlFor="oauth-edition" className="text-sm font-medium">
+                登录版本
+              </label>
+              <Select value={edition} onValueChange={(value) => setEdition(value as OAuthEdition)}>
+                <SelectTrigger id="oauth-edition" className="w-full" aria-label="登录版本">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cn">国内版 WorkBuddy</SelectItem>
+                  <SelectItem value="ai">国际版 workbuddy.ai</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                选择后将使用对应官网完成扫码，账号会自动保存到对应版本。
+              </p>
+            </div>
             <Button onClick={start} disabled={busy} className="w-full">
               {busy ? "正在发起登录…" : "开始扫码登录"}
             </Button>
@@ -131,7 +151,7 @@ export function OAuthLoginDialog({ open, onOpenChange }: Props) {
               </AlertDescription>
             </Alert>
             <p className="text-sm text-muted-foreground">
-              正在等待扫码授权，请在浏览器完成操作…
+              正在等待{edition === "ai" ? "国际版" : "国内版"}扫码授权，请在浏览器完成操作…
             </p>
           </div>
         )}

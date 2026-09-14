@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 
 use crate::modules::account::{build_auth_headers, upsert_account};
 use crate::modules::config::{
-    http_request, load_checkin_config, norm_ts, now_ms, RunFlagGuard, WORKBUDDY_API_ENDPOINT,
+    api_endpoint_for_account, http_request, load_checkin_config, norm_ts, now_ms, RunFlagGuard,
     WORKBUDDY_API_PREFIX,
 };
 
@@ -36,7 +36,10 @@ pub async fn refresh_account_token(mut account: Value) -> Value {
 
     let mut headers = build_auth_headers(&account);
     headers.insert("X-Refresh-Token".to_string(), rt.clone());
-    let url = format!("{WORKBUDDY_API_ENDPOINT}{WORKBUDDY_API_PREFIX}/auth/token/refresh");
+    let url = format!(
+        "{}{WORKBUDDY_API_PREFIX}/auth/token/refresh",
+        api_endpoint_for_account(&account)
+    );
     let resp = http_request(&url, "POST", Some(json!({})), Some(&headers)).await;
     let code = resp.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     if code != 0 && code != 200 {

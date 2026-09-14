@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 
 use tauri::Emitter;
 use wb_switch_core::modules::{
-    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, credit_usage, credits, export_import, oauth,
-    process, refresh, rotate, session, switch, token_stats, travel, update,
+    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, credit_usage, credits,
+    export_import, oauth, process, refresh, rotate, session, switch, token_stats, travel, update,
 };
 
 #[derive(Serialize)]
@@ -136,7 +136,6 @@ pub async fn detect_codebuddy_cn_ide_account() -> Result<Value, String> {
         .map_err(|e| e.to_string())?
 }
 
-
 /// DELETE /api/delete —— 删除账号。
 #[tauri::command]
 pub fn delete_account(account_id: String) -> Result<Value, String> {
@@ -152,8 +151,8 @@ pub fn delete_account(account_id: String) -> Result<Value, String> {
 
 /// POST /api/oauth/start —— 发起 OAuth 扫码登录。
 #[tauri::command]
-pub async fn oauth_start() -> Result<Value, String> {
-    oauth::oauth_start().await
+pub async fn oauth_start(edition: Option<String>) -> Result<Value, String> {
+    oauth::oauth_start(edition.as_deref()).await
 }
 
 /// GET /api/oauth/status —— 轮询采集结果。
@@ -290,13 +289,7 @@ pub async fn switch_account(
 /// GET /api/sessions —— 当前账号的会话列表。
 #[tauri::command]
 pub fn list_sessions() -> Value {
-    match session::current_user_uid() {
-        Some(uid) => json!({
-            "sessions": session::list_sessions_for_user(&uid),
-            "current": uid,
-        }),
-        None => json!({"sessions": [], "current": Value::Null}),
-    }
+    session::list_current_sessions()
 }
 
 /// POST /api/sessions/copy —— 把勾选会话复制到指定账号（路径 B）。

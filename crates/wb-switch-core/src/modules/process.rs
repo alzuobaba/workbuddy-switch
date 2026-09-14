@@ -568,22 +568,27 @@ pub fn windows_workbuddy_exe_path() -> Option<PathBuf> {
 
 /// 优雅退出用的目标 bundle id（实测正确 id；曾用/错误 id 不是它）。
 #[cfg(target_os = "macos")]
-const MACOS_QUIT_BUNDLE_ID: &str = "com.tencent.workbuddy.mac";
+const MACOS_QUIT_BUNDLE_IDS: [&str; 2] =
+    ["com.tencent.workbuddy.mac", "com.workbuddy.workbuddy-ai"];
 
 /// 主进程层字面量回退（路径探测失败时使用）。
 #[cfg(target_os = "macos")]
-const MACOS_MAIN_LITERAL_SUFFIXES: [&str; 2] = [
+const MACOS_MAIN_LITERAL_SUFFIXES: [&str; 3] = [
     "WorkBuddy.app/Contents/MacOS",
+    "WorkBuddy AI.app/Contents/MacOS",
     "CodeBuddy.app/Contents/MacOS",
 ];
 
 /// 包内层字面量回退（含全小写变体，防用户把 .app 目录改名为小写）。
 #[cfg(target_os = "macos")]
-const MACOS_BUNDLE_LITERAL_NAMES: [&str; 4] = [
+const MACOS_BUNDLE_LITERAL_NAMES: [&str; 7] = [
     "WorkBuddy.app",
-    "CodeBuddy.app",
+    "WorkBuddy AI.app",
     "workbuddy.app",
+    "workbuddy ai.app",
+    "CodeBuddy.app",
     "codebuddy.app",
+    "WorkBuddyAI.app",
 ];
 
 /// 解析单行 `ps -axo pid=,args=` 输出为 (pid, args)。
@@ -615,7 +620,11 @@ fn ps_row_matches_any(args: &str, patterns: &[String]) -> bool {
 /// 结果按 pid 去重。残留误杀面仅剩「用户进程的 args 主动引用目标 .app 路径」
 /// 这一刻意场景（对齐 Windows 契约记录的残余风险）。
 #[cfg(target_os = "macos")]
-pub(crate) fn filter_ps_rows(stdout: &str, patterns: &[String], self_pid: u32) -> Vec<(u32, String)> {
+pub(crate) fn filter_ps_rows(
+    stdout: &str,
+    patterns: &[String],
+    self_pid: u32,
+) -> Vec<(u32, String)> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for line in stdout.lines() {
@@ -715,7 +724,7 @@ fn app_bundle_candidates(home: &Path) -> Vec<PathBuf> {
     let bases = [Path::new("/Applications"), home_apps.as_path()];
     let mut out = Vec::new();
     for base in bases {
-        for name in ["WorkBuddy.app", "CodeBuddy.app"] {
+        for name in ["WorkBuddy.app", "WorkBuddy AI.app", "CodeBuddy.app"] {
             let p = base.join(name);
             if !out.contains(&p) {
                 out.push(p);
@@ -751,26 +760,55 @@ fn macos_running_app_path() -> Option<PathBuf> {
     None
 }
 
-/// mdfind 按 bundle id 探测应用路径（Spotlight 不可用/未命中则静默跳过）。
+/// 按发行版探测正在运行的客户端，避免国内/国际版同时运行时选错目标。
 #[cfg(target_os = "macos")]
-fn macos_mdfind_app_path() -> Option<PathBuf> {
-    let query = format!("kMDItemCFBundleIdentifier == '{}'c", MACOS_QUIT_BUNDLE_ID);
+fn macos_running_app_path_for_edition(international: bool) -> Option<PathBuf> {
+    let marker = if international {
+        "WorkBuddy AI.app/Contents/MacOS"
+    } else {
+        "WorkBuddy.app/Contents/MacOS"
+    };
+    let patterns = vec![marker.to_string()];
+    for (_pid, args) in macos_rows_by_patterns(&patterns) {
+        if let Some(p) = extract_app_bundle_from_args(&args) {
+            if is_app_bundle(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// mdfind 按指定 bundle id 探测应用路径（Spotlight 不可用/未命中则静默跳过）。
+#[cfg(target_os = "macos")]
+fn macos_mdfind_app_path_for_edition(international: bool) -> Option<PathBuf> {
+    let bundle_id = if international {
+        MACOS_QUIT_BUNDLE_IDS[1]
+    } else {
+        MACOS_QUIT_BUNDLE_IDS[0]
+    };
+    let query = format!("kMDItemCFBundleIdentifier == '{}'c", bundle_id);
     let out = run_cmd_timeout("mdfind", &[query.as_str()], 5)?;
     if !out.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout
+    String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(PathBuf::from)
 }
 
+/// mdfind 兜底：按国内版优先顺序探测任一客户端。
+#[cfg(target_os = "macos")]
+fn macos_mdfind_app_path() -> Option<PathBuf> {
+    macos_mdfind_app_path_for_edition(false).or_else(|| macos_mdfind_app_path_for_edition(true))
+}
+
 /// macOS app 路径动态探测（对齐 Windows 契约风格）。
 ///
 /// 顺序：运行中主进程 → 缓存（mac 判 app bundle 目录）→ 常见位置
-/// （/Applications、~/Applications × WorkBuddy/CodeBuddy）→ mdfind bundle id。
+/// （/Applications、~/Applications × WorkBuddy/WorkBuddy AI/CodeBuddy）→ mdfind bundle id。
 /// 命中即写缓存；缓存指向已不存在的 bundle 则丢弃并继续。
 /// 全部失败返回 None，由调用方决定默认路径 / 字面量回退。
 #[cfg(target_os = "macos")]
@@ -801,12 +839,63 @@ fn macos_workbuddy_app_path_resolved() -> Option<PathBuf> {
     None
 }
 
-/// macOS：解析 WorkBuddy app 路径；全部失败回退默认 `/Applications/WorkBuddy.app`
-/// （供启动失败文案与包模式回退使用，与改造前的默认值等价）。
+/// 按发行版解析 macOS 应用路径。目标账号启动时必须使用此函数，不能复用
+/// 「任意已安装客户端」的通用探测结果，否则两个版本并存时会启动错客户端。
+#[cfg(target_os = "macos")]
+fn macos_workbuddy_app_path_resolved_for_edition(international: bool) -> Option<PathBuf> {
+    if let Some(p) = macos_running_app_path_for_edition(international) {
+        persist_macos_app_cache(&p);
+        return Some(p);
+    }
+
+    if let Some(cached) = config::load_workbuddy_exe_cache() {
+        let is_ai = cached
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("WorkBuddy AI.app"));
+        if is_app_bundle(&cached) && is_ai == international {
+            return Some(cached);
+        }
+    }
+
+    let home = config::home_dir();
+    for p in app_bundle_candidates(&home) {
+        let is_ai = p
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("WorkBuddy AI.app"));
+        if is_app_bundle(&p) && is_ai == international {
+            persist_macos_app_cache(&p);
+            return Some(p);
+        }
+    }
+
+    if let Some(p) = macos_mdfind_app_path_for_edition(international) {
+        if is_app_bundle(&p) {
+            persist_macos_app_cache(&p);
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// macOS：解析当前正在运行或默认探测到的 WorkBuddy app 路径。
 #[cfg(target_os = "macos")]
 pub fn macos_workbuddy_app_path() -> PathBuf {
     macos_workbuddy_app_path_resolved()
         .unwrap_or_else(|| PathBuf::from("/Applications/WorkBuddy.app"))
+}
+
+/// macOS：解析指定发行版的 WorkBuddy app 路径。
+#[cfg(target_os = "macos")]
+pub fn macos_workbuddy_app_path_for_edition(international: bool) -> PathBuf {
+    macos_workbuddy_app_path_resolved_for_edition(international).unwrap_or_else(|| {
+        if international {
+            PathBuf::from("/Applications/WorkBuddy AI.app")
+        } else {
+            PathBuf::from("/Applications/WorkBuddy.app")
+        }
+    })
 }
 
 /// `kill -9` 按 PID 批量强杀；不按字符串匹配。失败仅打日志。
@@ -867,22 +956,40 @@ fn close_workbuddy_macos(timeout_secs: i64) -> Result<(), String> {
     let started = Instant::now();
     let timeout = Duration::from_secs(timeout_secs.max(1) as u64);
     let resolved = macos_workbuddy_app_path_resolved();
-    let main_patterns = macos_main_patterns(resolved.as_deref());
-    let bundle_patterns = macos_bundle_patterns(resolved.as_deref());
-    let remaining = || timeout.saturating_sub(started.elapsed()).max(Duration::from_millis(100));
-
-    // 1) 优雅退出
-    let quit_script = format!("quit app id \"{MACOS_QUIT_BUNDLE_ID}\"");
-    let quit = run_cmd_timeout("osascript", &["-e", quit_script.as_str()], 10);
-    match quit {
-        Some(out) if !out.status.success() => {
-            eprintln!(
-                "[close] osascript quit failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+    // 切换版本时必须关闭两个客户端：如果国内版与国际版同时运行，
+    // 只清理由通用探测选中的一个会留下旧客户端进程。
+    let mut main_patterns = macos_main_patterns(None);
+    let mut bundle_patterns = macos_bundle_patterns(None);
+    if let Some(app) = resolved.as_deref() {
+        let main_pattern = format!("{}/Contents/MacOS", app.display());
+        if !main_patterns.contains(&main_pattern) {
+            main_patterns.push(main_pattern);
         }
-        None => eprintln!("[close] osascript quit timed out"),
-        _ => {}
+        let bundle_pattern = app.display().to_string();
+        if !bundle_patterns.contains(&bundle_pattern) {
+            bundle_patterns.push(bundle_pattern);
+        }
+    }
+    let remaining = || {
+        timeout
+            .saturating_sub(started.elapsed())
+            .max(Duration::from_millis(100))
+    };
+
+    // 1) 优雅退出：国内版与国际版 bundle id 不同，逐个尝试，未运行的一方报错可忽略。
+    for bundle_id in MACOS_QUIT_BUNDLE_IDS {
+        let quit_script = format!("quit app id \"{bundle_id}\"");
+        let quit = run_cmd_timeout("osascript", &["-e", quit_script.as_str()], 10);
+        match quit {
+            Some(out) if !out.status.success() => {
+                eprintln!(
+                    "[close] osascript quit {bundle_id} failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            None => eprintln!("[close] osascript quit {bundle_id} timed out"),
+            _ => {}
+        }
     }
 
     // 2) 优雅窗口等待主进程消失
@@ -954,10 +1061,7 @@ fn validate_macos_startup(app: &Path, progress: Option<&dyn Fn(&str)>) -> Result
                             .unwrap_or(true);
                     if due {
                         last_beat = Some(now);
-                        say(&format!(
-                            "已稳定运行 {}s / 10s…",
-                            since_seen.as_secs()
-                        ));
+                        say(&format!("已稳定运行 {}s / 10s…", since_seen.as_secs()));
                     }
                 }
             }
@@ -975,18 +1079,21 @@ fn validate_macos_startup(app: &Path, progress: Option<&dyn Fn(&str)>) -> Result
     ))
 }
 
-/// 启动 WorkBuddy（macOS）：路径存在性检查 → 保险清杀包内残留 → open -n -a
-/// → 轮询确认主进程出现且持续存活（覆盖单例锁导致秒退的场景）。
+/// 启动指定发行版 WorkBuddy（macOS）：路径存在性检查 → 保险清杀包内残留
+/// → open -n -a → 轮询确认主进程出现且持续存活。
 ///
 /// progress 可选：清杀/启动/存活确认阶段推送心跳（见 `validate_macos_startup`）。
 #[cfg(target_os = "macos")]
-fn launch_workbuddy_macos(progress: Option<&dyn Fn(&str)>) -> Result<(), String> {
+fn launch_workbuddy_macos_for_edition(
+    progress: Option<&dyn Fn(&str)>,
+    international: bool,
+) -> Result<(), String> {
     let say = |msg: &str| {
         if let Some(p) = progress {
             p(msg);
         }
     };
-    let app = macos_workbuddy_app_path();
+    let app = macos_workbuddy_app_path_for_edition(international);
     if !is_app_bundle(&app) {
         return Err(format!(
             "未找到 WorkBuddy 应用（尝试路径: {}）。请先手动打开一次 WorkBuddy 后重试。",
@@ -1016,7 +1123,10 @@ fn launch_workbuddy_macos(progress: Option<&dyn Fn(&str)>) -> Result<(), String>
             } else {
                 reason
             };
-            return Err(format!("启动 WorkBuddy 失败: {reason}（路径: {}）", app.display()));
+            return Err(format!(
+                "启动 WorkBuddy 失败: {reason}（路径: {}）",
+                app.display()
+            ));
         }
         None => {
             return Err(format!(
@@ -1131,9 +1241,18 @@ fn close_workbuddy_windows(timeout_secs: i64) -> Result<(), String> {
 /// progress 可选：macOS 启动与存活确认阶段推送心跳（避免界面长时间静默）；
 /// Windows/Linux 分支忽略该参数。
 pub fn launch_workbuddy(progress: Option<&dyn Fn(&str)>) -> Result<(), String> {
+    launch_workbuddy_for_edition(progress, false)
+}
+
+/// 启动指定发行版 WorkBuddy。macOS 目标账号切换必须传入对应版本，避免
+/// 国内版与国际版同时安装时被通用路径探测选错。
+pub fn launch_workbuddy_for_edition(
+    progress: Option<&dyn Fn(&str)>,
+    international: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        launch_workbuddy_macos(progress)
+        launch_workbuddy_macos_for_edition(progress, international)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1345,6 +1464,7 @@ D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe
             macos_main_patterns(None),
             vec![
                 "WorkBuddy.app/Contents/MacOS".to_string(),
+                "WorkBuddy AI.app/Contents/MacOS".to_string(),
                 "CodeBuddy.app/Contents/MacOS".to_string()
             ]
         );
@@ -1358,9 +1478,12 @@ D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe
             macos_bundle_patterns(None),
             vec![
                 "WorkBuddy.app".to_string(),
-                "CodeBuddy.app".to_string(),
+                "WorkBuddy AI.app".to_string(),
                 "workbuddy.app".to_string(),
-                "codebuddy.app".to_string()
+                "workbuddy ai.app".to_string(),
+                "CodeBuddy.app".to_string(),
+                "codebuddy.app".to_string(),
+                "WorkBuddyAI.app".to_string()
             ]
         );
         assert_eq!(
@@ -1382,12 +1505,13 @@ D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe
              5002 /Applications/workbuddy.app/Contents/MacOS/WorkBuddy\n\
              5003 /bin/zsh -c 'echo WORKBUDDY.APP/CONTENTS/MACOS mention'\n\
              5004 /Applications/CodeBuddy.app/Contents/MacOS/CodeBuddy\n\
+             5006 /Applications/WorkBuddy AI.app/Contents/MacOS/WorkBuddy AI\n\
              5005 /opt/tool/wb-switch/helper run\n"
         );
         let patterns = macos_main_patterns(None);
         let kept = filter_ps_rows(&stdout, &patterns, self_pid);
         let pids: Vec<u32> = kept.iter().map(|(pid, _)| *pid).collect();
-        assert_eq!(pids, vec![5001, 5004]);
+        assert_eq!(pids, vec![5001, 5004, 5006]);
     }
 
     #[cfg(target_os = "macos")]
@@ -1413,12 +1537,20 @@ D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe
     #[test]
     fn macos_extract_app_bundle_from_args() {
         assert_eq!(
-            extract_app_bundle_from_args("/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy --foo"),
+            extract_app_bundle_from_args(
+                "/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy --foo"
+            ),
             Some(PathBuf::from("/Applications/WorkBuddy.app"))
         );
         assert_eq!(
             extract_app_bundle_from_args("/Applications/CodeBuddy.app/Contents/MacOS/CodeBuddy"),
             Some(PathBuf::from("/Applications/CodeBuddy.app"))
+        );
+        assert_eq!(
+            extract_app_bundle_from_args(
+                "/Applications/WorkBuddy AI.app/Contents/MacOS/WorkBuddy AI"
+            ),
+            Some(PathBuf::from("/Applications/WorkBuddy AI.app"))
         );
         assert_eq!(extract_app_bundle_from_args("/usr/bin/ssh host"), None);
         assert_eq!(extract_app_bundle_from_args(""), None);
@@ -1428,13 +1560,18 @@ D:\Users\Zhou\AppData\Local\Programs\WorkBuddy\WorkBuddy.exe
     #[test]
     fn macos_app_bundle_candidates_order() {
         let cands = app_bundle_candidates(Path::new("/Users/tester"));
-        let s: Vec<String> = cands.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let s: Vec<String> = cands
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             s,
             vec![
                 "/Applications/WorkBuddy.app".to_string(),
+                "/Applications/WorkBuddy AI.app".to_string(),
                 "/Applications/CodeBuddy.app".to_string(),
                 "/Users/tester/Applications/WorkBuddy.app".to_string(),
+                "/Users/tester/Applications/WorkBuddy AI.app".to_string(),
                 "/Users/tester/Applications/CodeBuddy.app".to_string(),
             ]
         );

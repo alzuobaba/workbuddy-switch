@@ -9,7 +9,10 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 use crate::modules::account::{account_display_name, build_auth_headers};
-use crate::modules::config::{http_request, load_checkin_config, now_ms, WORKBUDDY_API_ENDPOINT};
+use crate::modules::config::{
+    api_endpoint_for_account, http_request, is_workbuddy_ai_account, load_checkin_config, now_ms,
+    WORKBUDDY_AI_API_ENDPOINT, WORKBUDDY_API_ENDPOINT,
+};
 use crate::modules::credit_usage;
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 
@@ -52,8 +55,7 @@ fn parse_number(value: Option<&Value>) -> Option<f64> {
 }
 
 fn first_number(value: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter()
-        .find_map(|key| parse_number(value.get(*key)))
+    keys.iter().find_map(|key| parse_number(value.get(*key)))
 }
 
 fn parse_timestamp_ms(value: Option<&Value>) -> Option<i64> {
@@ -146,9 +148,11 @@ fn has_resource_accounts(response: &Value) -> bool {
         &["data", "accounts"],
         &["data", "data", "accounts"],
     ];
-    paths
-        .iter()
-        .any(|path| value_at_path(response, path).and_then(Value::as_array).is_some())
+    paths.iter().any(|path| {
+        value_at_path(response, path)
+            .and_then(Value::as_array)
+            .is_some()
+    })
 }
 
 fn has_resource_packages(response: &Value) -> bool {
@@ -160,9 +164,11 @@ fn has_resource_packages(response: &Value) -> bool {
         &["data", "packages"],
         &["data", "data", "packages"],
     ];
-    paths
-        .iter()
-        .any(|path| value_at_path(response, path).and_then(Value::as_array).is_some())
+    paths.iter().any(|path| {
+        value_at_path(response, path)
+            .and_then(Value::as_array)
+            .is_some()
+    })
 }
 
 fn resource_summary(raw: &Value, now: i64) -> Value {
@@ -203,7 +209,11 @@ fn resource_summary(raw: &Value, now: i64) -> Value {
     let raw_used = first_number(raw, &used_keys)
         .or_else(|| slice.and_then(|value| first_number(value, &used_keys)));
     let total = raw_total
-        .or_else(|| raw_remaining.zip(raw_used).map(|(remaining, used)| remaining + used))
+        .or_else(|| {
+            raw_remaining
+                .zip(raw_used)
+                .map(|(remaining, used)| remaining + used)
+        })
         .or(raw_remaining)
         .or(raw_used)
         .unwrap_or(0.0)
@@ -356,6 +366,8 @@ async fn post_with_account(account: &Value, url: &str, body: Value) -> Value {
 fn request_origin(url: &str) -> &'static str {
     if url.starts_with(WORKBUDDY_WEB_ENDPOINT) {
         WORKBUDDY_WEB_ENDPOINT
+    } else if url.starts_with(WORKBUDDY_AI_API_ENDPOINT) {
+        WORKBUDDY_AI_API_ENDPOINT
     } else {
         WORKBUDDY_API_ENDPOINT
     }
@@ -393,7 +405,10 @@ fn paid_packages_body() -> Value {
 
 fn free_packages_body() -> Value {
     let now = Local::now();
-    let start = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or(now.naive_local());
+    let start = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or(now.naive_local());
     let end = now
         .date_naive()
         .and_hms_opt(23, 59, 59)
@@ -409,10 +424,10 @@ fn free_packages_body() -> Value {
 }
 
 fn new_resource_endpoint(account: &Value) -> &'static str {
-    // 官网脚本使用相对路径，实际请求的是当前登录 origin。账号库中的 CN
-    // OAuth token 默认签发给 www.codebuddy.cn；若把它固定发往
-    // www.workbuddy.cn，令牌域和 X-Domain 会不一致并被网关拒绝。
-    // 这里只在两个已知官方 origin 间选择，不允许账号数据拼出任意主机。
+    // 只在已知官方 origin 间选择，不允许账号数据拼出任意主机。
+    if is_workbuddy_ai_account(account) {
+        return WORKBUDDY_AI_API_ENDPOINT;
+    }
     match account
         .get("domain")
         .and_then(Value::as_str)
@@ -519,7 +534,7 @@ async fn fetch_legacy_user_resource(account: &Value) -> Value {
         "PackageEndTimeRangeBegin": begin,
         "PackageEndTimeRangeEnd": end,
     });
-    let url = format!("{WORKBUDDY_API_ENDPOINT}{USER_RESOURCE_PATH}");
+    let url = format!("{}{USER_RESOURCE_PATH}", api_endpoint_for_account(account));
     // 新接口编排已经统一执行过惰性刷新，并在任一路未授权时只刷新一次。
     // 旧接口回退必须直接复用该账号，不能重新进入 authenticated_post，
     // 否则可能重复刷新并用旧 refresh token 覆盖刚落盘的新 token。
@@ -670,12 +685,9 @@ pub async fn get_credit_expiry(account: &Value) -> Value {
     let account_id = account.get("id").cloned().unwrap_or(Value::Null);
     let now = now_ms();
     let responses = fetch_new_resource_responses(account).await;
-    if let Some(resources) = normalized_new_resources(
-        &responses.summary,
-        &responses.paid,
-        &responses.free,
-        now,
-    ) {
+    if let Some(resources) =
+        normalized_new_resources(&responses.summary, &responses.paid, &responses.free, now)
+    {
         return credit_result(account, resources, now);
     }
 
@@ -949,7 +961,10 @@ mod tests {
         );
 
         let headers = resource_auth_headers(&codebuddy, new_resource_endpoint(&codebuddy));
-        assert_eq!(headers.get("X-Client-Platform").map(String::as_str), Some("web"));
+        assert_eq!(
+            headers.get("X-Client-Platform").map(String::as_str),
+            Some("web")
+        );
         assert_eq!(
             headers.get("Accept").map(String::as_str),
             Some("application/json, text/plain, */*")
@@ -1028,7 +1043,9 @@ mod tests {
             "code": 10085,
             "msg": "请求不合法，如有疑问请联系客服"
         })));
-        assert!(!is_transport_error(&json!({"code": 401, "message": "unauthorized"})));
+        assert!(!is_transport_error(
+            &json!({"code": 401, "message": "unauthorized"})
+        ));
         assert!(!is_transport_error(&json!({"code": 0, "data": {}})));
         assert!(!is_unauthorized(&json!({
             "code": 10085,

@@ -77,6 +77,7 @@ pub fn account_meta(acc: &Value) -> Value {
         "email": acc.get("email"),
         "nickname": acc.get("nickname"),
         "enterpriseName": acc.get("enterpriseName"),
+        "domain": acc.get("domain"),
         "expiresAt": acc.get("expiresAt"),
         "refreshExpiresAt": acc.get("refreshExpiresAt"),
         "refreshedAt": acc.get("refreshedAt"),

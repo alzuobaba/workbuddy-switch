@@ -13,8 +13,51 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // ---------------------------------------------------------------------------
 
 pub const WORKBUDDY_API_ENDPOINT: &str = "https://www.codebuddy.cn";
+pub const WORKBUDDY_AI_API_ENDPOINT: &str = "https://www.workbuddy.ai";
 pub const WORKBUDDY_API_PREFIX: &str = "/v2/plugin";
 pub const WORKBUDDY_PLATFORM: &str = "workbuddy";
+pub const WORKBUDDY_AI_PLATFORM: &str = "workbuddy-ai";
+
+/// 判断账号是否属于国际版 WorkBuddy。
+///
+/// 认证文件中的 domain 是受服务端控制的 origin，只接受两个已知国际域名，
+/// 不允许任意账号字段影响请求主机，避免把 token 发往未知地址。
+pub fn is_workbuddy_ai_account(account: &Value) -> bool {
+    let domain = account
+        .get("domain")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            account
+                .get("auth_raw")
+                .and_then(|raw| raw.get("auth"))
+                .and_then(|auth| auth.get("domain"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
+    matches!(
+        domain.as_deref(),
+        Some("workbuddy.ai") | Some("www.workbuddy.ai")
+    )
+}
+
+/// 返回账号对应的官方 API origin。
+pub fn api_endpoint_for_account(account: &Value) -> &'static str {
+    if is_workbuddy_ai_account(account) {
+        WORKBUDDY_AI_API_ENDPOINT
+    } else {
+        WORKBUDDY_API_ENDPOINT
+    }
+}
+
+/// 返回账号对应的 OAuth platform 标识。
+pub fn platform_for_account(account: &Value) -> &'static str {
+    if is_workbuddy_ai_account(account) {
+        WORKBUDDY_AI_PLATFORM
+    } else {
+        WORKBUDDY_PLATFORM
+    }
+}
 
 pub const OAUTH_TIMEOUT_SECONDS: i64 = 600;
 
@@ -971,10 +1014,9 @@ mod tests {
 
     #[test]
     fn parse_codebuddy_cn_app_cache_json_reads_exe() {
-        let path = parse_codebuddy_cn_app_cache_json(
-            r#"{ "exe": "/Applications/CodeBuddy CN.app" }"#,
-        )
-        .expect("valid cache");
+        let path =
+            parse_codebuddy_cn_app_cache_json(r#"{ "exe": "/Applications/CodeBuddy CN.app" }"#)
+                .expect("valid cache");
         assert_eq!(path.to_string_lossy(), "/Applications/CodeBuddy CN.app");
     }
 
@@ -987,13 +1029,29 @@ mod tests {
 
     #[test]
     fn codebuddy_cn_app_cache_file_is_not_workbuddy_exe_cache() {
-        assert_ne!(
-            codebuddy_cn_app_cache_file(),
-            workbuddy_exe_cache_file()
-        );
+        assert_ne!(codebuddy_cn_app_cache_file(), workbuddy_exe_cache_file());
         assert!(codebuddy_cn_app_cache_file()
             .file_name()
             .is_some_and(|n| n == "codebuddy_cn_app.json"));
+    }
+
+    #[test]
+    fn account_endpoint_and_platform_are_selected_from_known_domain() {
+        let cn = json!({"domain": "copilot.tencent.com"});
+        let ai = json!({"domain": "www.workbuddy.ai"});
+        assert_eq!(api_endpoint_for_account(&cn), WORKBUDDY_API_ENDPOINT);
+        assert_eq!(platform_for_account(&cn), WORKBUDDY_PLATFORM);
+        assert_eq!(api_endpoint_for_account(&ai), WORKBUDDY_AI_API_ENDPOINT);
+        assert_eq!(platform_for_account(&ai), WORKBUDDY_AI_PLATFORM);
+        assert!(!is_workbuddy_ai_account(
+            &json!({"domain": "attacker.example"})
+        ));
+    }
+
+    #[test]
+    fn ai_domain_can_be_read_from_imported_auth_raw() {
+        let account = json!({"auth_raw": {"auth": {"domain": "workbuddy.ai"}}});
+        assert!(is_workbuddy_ai_account(&account));
     }
 
     #[test]

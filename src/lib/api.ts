@@ -226,8 +226,8 @@ export function deleteAccount(accountId: string): Promise<{ ok: boolean }> {
   return call("delete_account", { accountId });
 }
 
-export function oauthStart(): Promise<OAuthStartResult> {
-  return call("oauth_start");
+export function oauthStart(edition: "cn" | "ai" = "cn"): Promise<OAuthStartResult> {
+  return call("oauth_start", { edition });
 }
 
 export function oauthStatus(loginId: string): Promise<OAuthPollResult> {
@@ -277,6 +277,9 @@ export function switchProgress(): Promise<{ running: boolean; progress: string |
 export function listSessions(): Promise<{
   sessions: Session[];
   current: string | null;
+  edition?: "cn" | "ai";
+  dbPath?: string;
+  diagnostics?: { reason: string };
 }> {
   return call("list_sessions");
 }

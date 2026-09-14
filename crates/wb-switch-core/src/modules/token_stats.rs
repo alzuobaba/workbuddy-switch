@@ -46,8 +46,8 @@ impl Totals {
     }
 
     fn value(&self) -> Value {
-        let cache_hit_rate = (self.usage.input > 0)
-            .then(|| self.usage.read as f64 / self.usage.input as f64);
+        let cache_hit_rate =
+            (self.usage.input > 0).then(|| self.usage.read as f64 / self.usage.input as f64);
         // `input` already includes cache reads; expose the same headline total
         // used by the dashboard without double-counting the cached portion.
         let total = self
@@ -73,21 +73,23 @@ fn number(value: &Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
-        .or_else(|| value.as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as u64))
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .map(|n| n as u64)
+        })
         .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
 }
 
 fn field(object: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| object.get(*key).and_then(number))
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(number))
 }
 
 fn positive_field(object: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| {
-        object
-            .get(*key)
-            .and_then(number)
-            .filter(|value| *value > 0)
-    })
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(number).filter(|value| *value > 0))
 }
 
 fn cached_input_field(object: &Map<String, Value>) -> u64 {
@@ -160,7 +162,9 @@ fn usage_object(value: Option<&Value>) -> Option<&Map<String, Value>> {
 fn usage(value: &Value) -> Option<Usage> {
     let provider = value.get("providerData");
     let candidates = [
-        value.get("message").and_then(|message| message.get("usage")),
+        value
+            .get("message")
+            .and_then(|message| message.get("usage")),
         provider.and_then(|data| data.get("usage")),
         value.get("usage"),
     ];
@@ -210,7 +214,11 @@ fn hour(value: &Value) -> Option<String> {
     let timestamp = timestamp(value)?;
     chrono::DateTime::from_timestamp_millis(timestamp).map(|date| {
         let local = date.with_timezone(&Local);
-        format!("{}-{}", local.weekday().num_days_from_monday(), local.hour())
+        format!(
+            "{}-{}",
+            local.weekday().num_days_from_monday(),
+            local.hour()
+        )
     })
 }
 
@@ -254,9 +262,7 @@ fn project_name(root: &Path, file: &Path) -> String {
     match name {
         // Product directories commonly encode the complete absolute path.
         // Returning that would leak a user name and parent directories.
-        Some(name) if !name.starts_with("Users-") && !name.starts_with("home-") => {
-            name.to_string()
-        }
+        Some(name) if !name.starts_with("Users-") && !name.starts_with("home-") => name.to_string(),
         _ => "未知项目".to_string(),
     }
 }
@@ -291,9 +297,7 @@ fn groups(groups: HashMap<String, Totals>) -> Vec<Value> {
             value
         })
         .collect();
-    values.sort_by(|left, right| {
-        total_value(right).cmp(&total_value(left))
-    });
+    values.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
     values
 }
 
@@ -309,9 +313,7 @@ fn session_groups(sessions: Vec<SessionTotals>) -> Vec<Value> {
             value
         })
         .collect();
-    values.sort_by(|left, right| {
-        total_value(right).cmp(&total_value(left))
-    });
+    values.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
     values
 }
 
@@ -532,7 +534,10 @@ fn ide_index_files(root: &Path, output: &mut Vec<PathBuf>) {
             let name = path.file_name().and_then(|name| name.to_str());
             // Message bodies contain chat content and must not be scanned.
             // Checkpoints and the shared Public bucket are unrelated to usage.
-            if !matches!(name, Some("messages" | "check-point" | "backups" | "Public")) {
+            if !matches!(
+                name,
+                Some("messages" | "check-point" | "backups" | "Public")
+            ) {
                 ide_index_files(&path, output);
             }
         } else if is_ide_conversation_index(&path) {
@@ -803,7 +808,15 @@ mod tests {
                 "cache_read_input_tokens": 4
             }}
         });
-        assert_eq!(usage(&value), Some(Usage { input: 10, output: 3, read: 4, write: 2 }));
+        assert_eq!(
+            usage(&value),
+            Some(Usage {
+                input: 10,
+                output: 3,
+                read: 4,
+                write: 2
+            })
+        );
     }
 
     #[test]
@@ -895,7 +908,6 @@ mod tests {
                 write: 0,
             })
         );
-
     }
 
     #[test]
@@ -920,9 +932,13 @@ mod tests {
                 "cache_read_input_tokens": 4
             }}
         });
-        fs::write(project.join("session.jsonl"), format!("{}\nnot-json\n", record))
-            .expect("write fixture");
-        fs::write(ignored.join("agent.jsonl"), format!("{}\n", record)).expect("write ignored fixture");
+        fs::write(
+            project.join("session.jsonl"),
+            format!("{}\nnot-json\n", record),
+        )
+        .expect("write fixture");
+        fs::write(ignored.join("agent.jsonl"), format!("{}\n", record))
+            .expect("write ignored fixture");
 
         let result = source(root.clone(), "fixture", None);
         assert_eq!(result["filesScanned"], 1);

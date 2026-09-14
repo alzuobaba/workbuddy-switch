@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use crate::modules::account::{account_display_name, build_auth_headers, load_accounts};
 use crate::modules::config::{
-    http_request, load_checkin_config, load_travel_cache, load_travel_config, now_ms, now_secs,
-    save_travel_cache, with_travel_cache_lock, RunFlagGuard, TRAVEL_API_PREFIX,
-    WORKBUDDY_API_ENDPOINT,
+    api_endpoint_for_account, http_request, is_workbuddy_ai_account, load_checkin_config,
+    load_travel_cache, load_travel_config, now_ms, now_secs, save_travel_cache,
+    with_travel_cache_lock, RunFlagGuard, TRAVEL_API_PREFIX,
 };
 use crate::modules::refresh::{ensure_fresh_token, refresh_account_token};
 
@@ -57,13 +57,18 @@ fn account_key(account: &Value) -> String {
         .unwrap_or_else(|| account_display_name(account))
 }
 
+fn unsupported_international_travel(account: &Value) -> bool {
+    is_workbuddy_ai_account(account)
+}
+
 fn build_travel_headers(account: &Value) -> HashMap<String, String> {
     let mut headers = build_auth_headers(account);
     headers.insert("x-client-platform".to_string(), "web".to_string());
-    headers.insert("origin".to_string(), WORKBUDDY_API_ENDPOINT.to_string());
+    let endpoint = api_endpoint_for_account(account);
+    headers.insert("origin".to_string(), endpoint.to_string());
     headers.insert(
         "referer".to_string(),
-        format!("{WORKBUDDY_API_ENDPOINT}/profile/growth-center"),
+        format!("{endpoint}/profile/growth-center"),
     );
     headers
 }
@@ -86,7 +91,7 @@ fn is_unauthorized(resp: &Value) -> bool {
 
 /// 发旅行接口请求；遇到未授权且存在 refresh token 时刷新一次并重试。
 async fn travel_request(path: &str, method: &str, body: Option<Value>, account: &Value) -> Value {
-    let url = format!("{WORKBUDDY_API_ENDPOINT}{path}");
+    let url = format!("{}{path}", api_endpoint_for_account(account));
     let headers = build_travel_headers(account);
     let mut resp = http_request(&url, method, body.clone(), Some(&headers)).await;
     if is_unauthorized(&resp)
@@ -572,14 +577,18 @@ fn merge_claim_state(prior: &Value, new: &Value) -> Value {
         if result_in_flight(prior)
             && nonzero_credit(merged.get("rewardCredit").unwrap_or(&Value::Null)).is_none()
         {
-            if let Some(credit) = nonzero_credit(prior.get("rewardCredit").unwrap_or(&Value::Null)) {
+            if let Some(credit) = nonzero_credit(prior.get("rewardCredit").unwrap_or(&Value::Null))
+            {
                 merged["rewardCredit"] = credit;
             }
         }
         if result_in_flight(prior)
             && merged.get("arriveAt").and_then(Value::as_i64).unwrap_or(0) <= 0
         {
-            if let Some(arrive_at) = prior.get("arriveAt").and_then(Value::as_i64).filter(|v| *v > 0)
+            if let Some(arrive_at) = prior
+                .get("arriveAt")
+                .and_then(Value::as_i64)
+                .filter(|v| *v > 0)
             {
                 merged["arriveAt"] = json!(arrive_at);
             }
@@ -589,7 +598,8 @@ fn merge_claim_state(prior: &Value, new: &Value) -> Value {
     if !result_claimed(prior) {
         return merged;
     }
-    let new_has_credit = nonzero_credit(merged.get("rewardCredit").unwrap_or(&Value::Null)).is_some();
+    let new_has_credit =
+        nonzero_credit(merged.get("rewardCredit").unwrap_or(&Value::Null)).is_some();
     merged["claimed"] = json!(true);
     if !new_has_credit {
         merged["rewardCredit"] = prior.get("rewardCredit").cloned().unwrap_or(Value::Null);
@@ -834,7 +844,22 @@ pub async fn run_travel_cycle() -> Value {
     for acc in &accounts {
         let id = account_key(acc);
         let prior = prior_results.get(&id);
-        let r = sync_account_for_dispatch(acc, prior).await;
+        let r = if unsupported_international_travel(acc) {
+            let mut result = depart_result(
+                acc,
+                acc.get("uid").and_then(Value::as_str),
+                true,
+                true,
+                Some("unsupported-platform"),
+                None,
+                "国际版不提供派猫猫旅行",
+            );
+            result["claimed"] = json!(true);
+            result["claimedAt"] = json!(now_ms());
+            result
+        } else {
+            sync_account_for_dispatch(acc, prior).await
+        };
         let r = if let Some(prior) = prior {
             merge_claim_state(prior, &r)
         } else {
@@ -879,16 +904,22 @@ pub async fn run_travel_claim_cycle() -> Value {
         return json!({"status": "skipped", "reason": "nothing-to-claim"});
     };
 
+    let accounts = load_accounts();
     let ids: Vec<String> = results
         .iter()
-        .filter(|(_, r)| result_in_flight(r))
+        .filter(|(id, r)| {
+            result_in_flight(r)
+                && accounts
+                    .iter()
+                    .find(|account| account_key(account).as_str() == id.as_str())
+                    .is_some_and(|account| !unsupported_international_travel(account))
+        })
         .map(|(id, _)| id.clone())
         .collect();
     if ids.is_empty() {
         return json!({"status": "skipped", "reason": "nothing-to-claim"});
     }
 
-    let accounts = load_accounts();
     let mut claimed = 0;
     let total = ids.len();
     let mut overlay_results = Map::new();
@@ -919,6 +950,7 @@ fn display_record(label: &str, result: &Value) -> Value {
     let arrive_at = result.get("arriveAt").and_then(Value::as_i64).unwrap_or(0);
     json!({
         "label": label,
+        "supported": label != "unsupported-platform",
         "rewardCredit": nonzero_credit(result.get("rewardCredit").unwrap_or(&Value::Null))
             .unwrap_or(Value::Null),
         "locationName": nonempty_str(result.get("locationName").unwrap_or(&Value::Null))
@@ -928,6 +960,9 @@ fn display_record(label: &str, result: &Value) -> Value {
 }
 
 fn display_label(same_day: bool, result: &Value) -> &'static str {
+    if result.get("skip").and_then(Value::as_str) == Some("unsupported-platform") {
+        return "unsupported-platform";
+    }
     if result_in_flight(result) {
         "traveling"
     } else if same_day && result.get("skip").and_then(Value::as_str) == Some("no-buddy") {
@@ -1022,6 +1057,26 @@ mod tests {
     }
 
     #[test]
+    fn international_accounts_are_marked_unsupported_without_api_calls() {
+        let account = json!({"domain": "www.workbuddy.ai"});
+        assert!(unsupported_international_travel(&account));
+        let result = depart_result(
+            &account,
+            None,
+            true,
+            true,
+            Some("unsupported-platform"),
+            None,
+            "国际版不提供派猫猫旅行",
+        );
+        assert_eq!(display_label(true, &result), "unsupported-platform");
+        assert_eq!(
+            display_record("unsupported-platform", &result)["supported"],
+            false
+        );
+    }
+
+    #[test]
     fn display_defaults_to_untraveled_when_no_cache() {
         let value = travel_display("no-such-account");
         assert_eq!(value["label"], "untraveled");
@@ -1112,10 +1167,7 @@ mod tests {
 
     #[test]
     fn official_status_decides_whether_to_depart() {
-        assert_eq!(
-            decide_travel_action("idle", false),
-            TravelAction::Depart
-        );
+        assert_eq!(decide_travel_action("idle", false), TravelAction::Depart);
         assert_eq!(
             decide_travel_action("idle", true),
             TravelAction::SkipDailyLimit
@@ -1124,10 +1176,7 @@ mod tests {
             decide_travel_action("traveling", true),
             TravelAction::WaitTraveling
         );
-        assert_eq!(
-            decide_travel_action("arrived", true),
-            TravelAction::Claim
-        );
+        assert_eq!(decide_travel_action("arrived", true), TravelAction::Claim);
     }
 
     #[test]
@@ -1176,10 +1225,7 @@ mod tests {
         assert!(in_flight_due(&traveling, 100));
         assert!(in_flight_due(&traveling, 101));
         assert!(!in_flight_due(&traveling, 99));
-        assert!(in_flight_due(
-            &json!({ "ok": true, "claimed": false }),
-            1
-        ));
+        assert!(in_flight_due(&json!({ "ok": true, "claimed": false }), 1));
         assert!(!in_flight_due(
             &json!({ "ok": true, "claimed": true, "arriveAt": 1 }),
             100

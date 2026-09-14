@@ -17,8 +17,8 @@ use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 
 use wb_switch_core::modules::{
-    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, config, credit_usage, credits, export_import,
-    oauth, process, refresh, rotate, session, switch, token_stats, travel, update,
+    account, auth_file, checkin, codebuddy_cli, codebuddy_cn_ide, config, credit_usage, credits,
+    export_import, oauth, process, refresh, rotate, session, switch, token_stats, travel, update,
 };
 
 /// WorkBuddy 运行状态缓存：Windows 上检测要跑 tasklist（慢），缓存几秒避免
@@ -63,9 +63,18 @@ pub fn router() -> Router {
             post(api_codebuddy_cli_install_helper),
         )
         .route("/api/codebuddy-cli/switch", post(api_codebuddy_cli_switch))
-        .route("/api/codebuddy-cn-ide/status", get(api_codebuddy_cn_ide_status))
-        .route("/api/codebuddy-cn-ide/switch", post(api_codebuddy_cn_ide_switch))
-        .route("/api/codebuddy-cn-ide/detect", post(api_codebuddy_cn_ide_detect))
+        .route(
+            "/api/codebuddy-cn-ide/status",
+            get(api_codebuddy_cn_ide_status),
+        )
+        .route(
+            "/api/codebuddy-cn-ide/switch",
+            post(api_codebuddy_cn_ide_switch),
+        )
+        .route(
+            "/api/codebuddy-cn-ide/detect",
+            post(api_codebuddy_cn_ide_detect),
+        )
         .route("/api/delete", post(api_delete))
         .route("/api/oauth/start", post(api_oauth_start))
         .route("/api/oauth/status", post(api_oauth_status))
@@ -184,7 +193,10 @@ async fn api_codebuddy_cn_ide_switch(Json(body): Json<Value>) -> Response {
         .or_else(|| body.get("account_id"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let restart = body.get("restart").and_then(|v| v.as_bool()).unwrap_or(true);
+    let restart = body
+        .get("restart")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     match codebuddy_cn_ide::switch_account(account_id, restart) {
         Ok(v) => json_ok(v),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
@@ -197,7 +209,6 @@ async fn api_codebuddy_cn_ide_detect() -> Response {
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
     }
 }
-
 
 async fn api_delete(Json(body): Json<Value>) -> Response {
     let id = body.get("accountId").and_then(|v| v.as_str()).unwrap_or("");
@@ -297,8 +308,12 @@ async fn api_import(Json(body): Json<Value>) -> Response {
 // OAuth 登录
 // ---------------------------------------------------------------------------
 
-async fn api_oauth_start() -> Response {
-    match oauth::oauth_start().await {
+async fn api_oauth_start(body: Option<Json<Value>>) -> Response {
+    let edition = body
+        .as_ref()
+        .and_then(|Json(value)| value.get("edition"))
+        .and_then(Value::as_str);
+    match oauth::oauth_start(edition).await {
         Ok(v) => json_ok(v),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
     }
@@ -388,13 +403,7 @@ async fn api_switch_progress() -> Response {
 // ---------------------------------------------------------------------------
 
 async fn api_sessions() -> Response {
-    match session::current_user_uid() {
-        Some(uid) => json_ok(json!({
-            "sessions": session::list_sessions_for_user(&uid),
-            "current": uid,
-        })),
-        None => json_ok(json!({ "sessions": [], "current": null })),
-    }
+    json_ok(session::list_current_sessions())
 }
 
 async fn api_copy_sessions(Json(body): Json<Value>) -> Response {
@@ -465,9 +474,9 @@ async fn api_credit_statistics(RawQuery(query): RawQuery) -> Response {
 
 async fn api_token_statistics(RawQuery(query): RawQuery) -> Response {
     let days = query.as_deref().and_then(|value| {
-        value.split('&').find_map(|part| {
-            part.strip_prefix("days=")?.parse::<i64>().ok()
-        })
+        value
+            .split('&')
+            .find_map(|part| part.strip_prefix("days=")?.parse::<i64>().ok())
     });
     match tokio::task::spawn_blocking(move || token_stats::get_statistics(days)).await {
         Ok(statistics) => json_ok(statistics),

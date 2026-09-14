@@ -88,6 +88,28 @@ function accountIdentity(account: AccountMeta): string {
 
 const chipClass = "rounded-md px-1.5 py-0 text-[11px] font-medium";
 
+function editionBadge(isInternational: boolean) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="secondary"
+          aria-label={isInternational ? "国际版 workbuddy.ai" : "国内版 codebuddy.cn"}
+          className={cn(
+            "shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-bold tracking-[0.08em]",
+            isInternational
+              ? "border-violet-400/80 bg-violet-500/15 text-violet-200"
+              : "border-emerald-400/80 bg-emerald-500/15 text-emerald-200",
+          )}
+        >
+          {isInternational ? "IN" : "CN"}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="top">{isInternational ? "国际版 workbuddy.ai" : "国内版 codebuddy.cn"}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function travelIconChip({
   label,
   tooltip,
@@ -138,6 +160,7 @@ function travelTooltip(status: TravelStatus): string {
     return "已结束";
   }
   if (status.label === "no-buddy") return "无 Buddy";
+  if (status.label === "unsupported-platform") return "国际版不支持旅行";
   return "未旅行";
 }
 
@@ -151,6 +174,8 @@ function travelChip(status: TravelStatus | undefined) {
       return travelIconChip({ label: travelTooltip(status), tooltip: travelTooltip(status), variant: "secondary" });
     case "finished":
       return travelIconChip({ label: travelTooltip(status), tooltip: travelTooltip(status), variant: "success" });
+    case "unsupported-platform":
+      return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>国际版无旅行</Badge>;
     case "untraveled":
     default:
       return <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>未旅行</Badge>;
@@ -222,6 +247,7 @@ function ProductCurrentState({ product, compact = false }: { product: "workbuddy
 export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, todayCheckedIn, travelStatus, credit, creditLoading, creditUpdatedAt, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, featuresDisabled = true, compact = false }: Props) {
   const [resourcesOpen, setResourcesOpen] = useState(false);
   const name = account.nickname || account.uid || "未命名账号";
+  const isInternational = account.domain?.toLowerCase() === "www.workbuddy.ai" || account.domain?.toLowerCase() === "workbuddy.ai";
   const expired = typeof account.expiresAt === "number" && account.expiresAt < Date.now();
   const avatarClass = avatarTone(name);
   const resources = creditResources(credit);
@@ -263,12 +289,18 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
 
   return (
     <TooltipProvider>
-      <article className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-[0_1px_2px_rgba(15,23,42,.025),0_10px_28px_rgba(15,23,42,.035)] transition-shadow hover:shadow-[0_2px_4px_rgba(15,23,42,.04),0_14px_34px_rgba(15,23,42,.055)]">
+      <article className={cn(
+        "flex min-w-0 flex-col overflow-hidden rounded-2xl border shadow-[0_1px_2px_rgba(15,23,42,.025),0_10px_28px_rgba(15,23,42,.035)] transition-shadow hover:shadow-[0_2px_4px_rgba(15,23,42,.04),0_14px_34px_rgba(15,23,42,.055)]",
+        isInternational ? "border-violet-400/55 bg-violet-950/20" : "border-emerald-400/45 bg-emerald-950/15",
+      )}>
       <header
         className={cn(
-          "relative flex items-center border-b border-border",
+          "relative flex items-center border-b",
           compact ? "min-h-[52px] px-3.5 py-1.5" : "min-h-[104px] px-5 py-3",
-          workbuddyActive ? "bg-primary/5" : codebuddyCliActive ? "bg-muted/60" : "bg-muted/30",
+          isInternational
+            ? "border-violet-400/35 bg-violet-900/25"
+            : "border-emerald-400/30 bg-emerald-900/20",
+          workbuddyActive ? "ring-1 ring-inset ring-primary/30" : codebuddyCliActive ? "bg-muted/60" : "",
         )}
       >
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -325,7 +357,12 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
 
         {compact ? (
           <div className="relative z-10 flex w-full min-w-0 items-center gap-2 pr-10">
-            <h3 className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-5" title={name}>{name}</h3>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 flex-wrap items-start gap-1.5">
+                <h3 className="min-w-0 flex-1 whitespace-normal break-words text-[13px] font-semibold leading-5" title={name}>{name}</h3>
+                {editionBadge(isInternational)}
+              </div>
+            </div>
             <div className="hidden shrink-0 items-center gap-1 min-[420px]:flex">{statusChips}</div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
               {workbuddyActive ? (
@@ -406,7 +443,10 @@ export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch,
           <div className={cn("relative z-10 flex w-full min-w-0 items-center gap-3", workbuddyActive || codebuddyCliActive ? "pr-[112px]" : "pr-10")}>
             <div className={cn("flex size-12 shrink-0 items-center justify-center rounded-full text-base font-semibold ring-4 ring-white/65", avatarClass)}>{name.charAt(0).toUpperCase()}</div>
             <div className="min-w-0 flex-1">
-              <h3 className="truncate text-sm font-semibold leading-5" title={name}>{name}</h3>
+              <div className="flex min-w-0 flex-wrap items-start gap-1.5">
+                <h3 className="min-w-0 flex-1 whitespace-normal break-words text-sm font-semibold leading-5" title={name}>{name}</h3>
+                {editionBadge(isInternational)}
+              </div>
               <p className="mt-0.5 truncate text-xs leading-5 text-muted-foreground" title={account.email || account.uid || account.id}>{accountIdentity(account)}</p>
               <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">{statusChips}</div>
             </div>

@@ -82,9 +82,8 @@ fn write_settings_env_token(value: &mut Value, token: &str) -> Result<(), String
 }
 
 fn persist_settings_at(settings: &Path, value: &Value) -> Result<(), String> {
-    let content = serde_json::to_string_pretty(value).map_err(|_| {
-        auth_config_error("配置阶段", "无法生成 CodeBuddy settings.json")
-    })?;
+    let content = serde_json::to_string_pretty(value)
+        .map_err(|_| auth_config_error("配置阶段", "无法生成 CodeBuddy settings.json"))?;
     if let Some(parent) = settings.parent() {
         std::fs::create_dir_all(parent).map_err(|_| {
             auth_config_error(
@@ -202,15 +201,8 @@ fn helper_migration_required() -> bool {
 }
 
 fn is_legacy_helper_path(path: &Path, directory: &Path, windows: bool) -> bool {
-    same_path(
-        path,
-        &directory.join(LEGACY_WINDOWS_HELPER_FILE),
-        windows,
-    ) || same_path(
-        path,
-        &directory.join(LEGACY_HELPER_FILE),
-        windows,
-    )
+    same_path(path, &directory.join(LEGACY_WINDOWS_HELPER_FILE), windows)
+        || same_path(path, &directory.join(LEGACY_HELPER_FILE), windows)
 }
 
 fn helper_is_current() -> bool {
@@ -341,9 +333,7 @@ fn helper_validation_error(stage: &str, cause: &str) -> String {
     let hint = "请确认 Git Bash 和 Node.js 可用，然后重试；如仍失败，请查看 CodeBuddy CLI 日志";
     #[cfg(not(windows))]
     let hint = "请确认 Node.js 可用，然后重试；如仍失败，请查看 CodeBuddy CLI 日志";
-    format!(
-        "CodeBuddy CLI helper 验证失败（{stage}）：{cause}。{hint}"
-    )
+    format!("CodeBuddy CLI helper 验证失败（{stage}）：{cause}。{hint}")
 }
 
 fn auth_config_error(stage: &str, cause: &str) -> String {
@@ -376,10 +366,7 @@ fn validate_helper_result(
     }
     let stdout = String::from_utf8_lossy(stdout);
     if stdout.trim().is_empty() {
-        return Err(helper_validation_error(
-            "输出阶段",
-            "helper 未返回认证结果",
-        ));
+        return Err(helper_validation_error("输出阶段", "helper 未返回认证结果"));
     }
     if stdout.trim() != format!("Bearer {expected_token}") {
         return Err(helper_validation_error(
@@ -392,11 +379,14 @@ fn validate_helper_result(
 
 #[cfg(any(target_os = "macos", test))]
 fn node_path_from_shell_output(stdout: &[u8]) -> Option<PathBuf> {
-    String::from_utf8_lossy(stdout).lines().rev().find_map(|line| {
-        let path = PathBuf::from(line.trim());
-        (path.is_absolute() && path.file_name().is_some_and(|name| name == "node"))
-            .then_some(path)
-    })
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let path = PathBuf::from(line.trim());
+            (path.is_absolute() && path.file_name().is_some_and(|name| name == "node"))
+                .then_some(path)
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -482,7 +472,7 @@ fn run_helper_command(command: &str) -> Result<Output, String> {
         }
         Err(helper_validation_error(
             "启动阶段",
-        "未找到 Git Bash bash.exe",
+            "未找到 Git Bash bash.exe",
         ))
     }
     #[cfg(target_os = "macos")]
@@ -520,10 +510,12 @@ fn account_token(account: &Value) -> Result<&str, String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| auth_config_error(
-            "账号阶段",
-            "所选账号没有可用的认证信息，请先重新登录或刷新 Token",
-        ))
+        .ok_or_else(|| {
+            auth_config_error(
+                "账号阶段",
+                "所选账号没有可用的认证信息，请先重新登录或刷新 Token",
+            )
+        })
 }
 
 fn settings_account_token(account: &Value) -> Result<&str, String> {
@@ -700,9 +692,7 @@ fn install_env_auth() -> Result<Value, String> {
     let active = state_account_index(&state, &accounts)
         .and_then(|(index, _)| accounts.get(index))
         .or_else(|| accounts.first())
-        .ok_or_else(|| {
-            auth_config_error("账号阶段", "当前没有可供 CodeBuddy CLI 使用的账号")
-        })?;
+        .ok_or_else(|| auth_config_error("账号阶段", "当前没有可供 CodeBuddy CLI 使用的账号"))?;
     let token = settings_account_token(active)?;
     let (previous_settings, settings_value) = prepare_settings_env_update(&settings, token)?;
     commit_settings_env_update(
@@ -764,9 +754,8 @@ pub fn install_helper() -> Result<Value, String> {
         helper_validation_error("安装阶段", "无法创建 helper 目录，请检查用户目录权限")
     })?;
     // 各平台都直接配置这份 helper.cjs。
-    atomic_write(&logic_target, STANDARD_HELPER).map_err(|_| {
-        helper_validation_error("安装阶段", "无法写入 helper.cjs，请检查文件权限")
-    })?;
+    atomic_write(&logic_target, STANDARD_HELPER)
+        .map_err(|_| helper_validation_error("安装阶段", "无法写入 helper.cjs，请检查文件权限"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -823,10 +812,7 @@ pub fn install_helper() -> Result<Value, String> {
     let active = state_account_index(&state, &accounts)
         .and_then(|(index, _)| accounts.get(index))
         .ok_or_else(|| {
-            helper_validation_error(
-                "账号阶段",
-                "当前没有可供 helper 验证的账号，请先添加账号",
-            )
+            helper_validation_error("账号阶段", "当前没有可供 helper 验证的账号，请先添加账号")
         });
     let validation =
         active.and_then(|account| validate_helper_for_account(&configured_command, account));
@@ -861,10 +847,7 @@ pub fn set_active_account(account_id: &str) -> Result<Value, String> {
         ensure_no_process_env_override()?;
     }
     if !cfg!(windows) && helper_migration_required() {
-        return Err(
-            "检测到旧版 CodeBuddy CLI helper；请先在账号页升级 CLI helper"
-                .to_string(),
-        );
+        return Err("检测到旧版 CodeBuddy CLI helper；请先在账号页升级 CLI helper".to_string());
     }
     if !cfg!(windows) && !helper_is_configured() {
         return Err(
@@ -921,9 +904,8 @@ pub fn set_active_account(account_id: &str) -> Result<Value, String> {
             return Err(error);
         }
     } else {
-        let command = helper_command().ok_or_else(|| {
-            helper_validation_error("配置阶段", "apiKeyHelper 配置为空")
-        })?;
+        let command = helper_command()
+            .ok_or_else(|| helper_validation_error("配置阶段", "apiKeyHelper 配置为空"))?;
         if let Err(error) = validate_helper_for_account(&command, &accounts[index]) {
             restore_file(&state_path(), previous_state.as_deref());
             return Err(error);
@@ -952,7 +934,10 @@ mod tests {
     use std::fs;
 
     fn helper_test_dir() -> PathBuf {
-        std::env::temp_dir().join(format!("wb-switch-codebuddy-helper-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!(
+            "wb-switch-codebuddy-helper-{}",
+            uuid::Uuid::new_v4()
+        ))
     }
 
     #[test]
@@ -1040,7 +1025,10 @@ mod tests {
 
         let persisted = read_json_file(&settings).unwrap();
         assert_eq!(settings_env_token(&persisted), Some("RAW_SECRET"));
-        assert_eq!(persisted["apiKeyHelper"], "C:/Users/tester/bin/wb-helper.bat");
+        assert_eq!(
+            persisted["apiKeyHelper"],
+            "C:/Users/tester/bin/wb-helper.bat"
+        );
         assert_eq!(persisted["trustedDirectories"][0], "C:/Users/tester");
         assert_eq!(persisted["env"]["HTTPS_PROXY"], "http://127.0.0.1:7890");
         fs::remove_dir_all(test_dir).unwrap();
@@ -1077,7 +1065,10 @@ mod tests {
         assert!(error.contains("不是有效 JSON"));
         assert!(!error.contains("NEW_SECRET"));
         assert!(!error.contains("SECRET_ON_DISK"));
-        assert_eq!(fs::read_to_string(&settings).unwrap(), "not-json SECRET_ON_DISK");
+        assert_eq!(
+            fs::read_to_string(&settings).unwrap(),
+            "not-json SECRET_ON_DISK"
+        );
         fs::remove_dir_all(test_dir).unwrap();
     }
 
@@ -1113,7 +1104,9 @@ mod tests {
         assert_eq!(
             select_windows_configured_path(
                 original,
-                Some(PathBuf::from(r"C:\Users\TESTUS~1\.codebuddy-rotate\helper.cjs")),
+                Some(PathBuf::from(
+                    r"C:\Users\TESTUS~1\.codebuddy-rotate\helper.cjs"
+                )),
             )
             .unwrap(),
             PathBuf::from(r"C:\Users\TESTUS~1\.codebuddy-rotate\helper.cjs")
@@ -1161,14 +1154,14 @@ mod tests {
     #[test]
     fn helper_validation_errors_never_include_stdout_or_token() {
         let secret = "SECRET_ACCESS_TOKEN";
-        let error = validate_helper_result(true, Some(0), b"Bearer OTHER_SECRET\n", secret)
-            .unwrap_err();
+        let error =
+            validate_helper_result(true, Some(0), b"Bearer OTHER_SECRET\n", secret).unwrap_err();
         assert!(error.contains("输出阶段"));
         assert!(!error.contains(secret));
         assert!(!error.contains("OTHER_SECRET"));
 
-        let error = validate_helper_result(false, Some(127), b"Bearer LEAKED\n", secret)
-            .unwrap_err();
+        let error =
+            validate_helper_result(false, Some(127), b"Bearer LEAKED\n", secret).unwrap_err();
         assert!(error.contains("退出码为 127"));
         assert!(!error.contains(secret));
         assert!(!error.contains("LEAKED"));
@@ -1179,9 +1172,7 @@ mod tests {
         let output = b"welcome to the shell\n/Users/test/.nvm/versions/node/v22/bin/node\n";
         assert_eq!(
             node_path_from_shell_output(output),
-            Some(PathBuf::from(
-                "/Users/test/.nvm/versions/node/v22/bin/node"
-            ))
+            Some(PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/node"))
         );
         assert_eq!(node_path_from_shell_output(b"node\nwelcome\n"), None);
     }
@@ -1215,7 +1206,10 @@ mod tests {
             .output()
             .unwrap();
         assert!(output.status.success());
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "Bearer SECRET_TWO\n");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "Bearer SECRET_TWO\n"
+        );
 
         fs::write(
             &accounts_file,

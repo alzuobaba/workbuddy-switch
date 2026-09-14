@@ -6,6 +6,8 @@ export interface AccountMeta {
   email: string | null;
   nickname: string | null;
   enterpriseName: string | null;
+  /** 官方认证 origin；www.workbuddy.ai 表示国际版。 */
+  domain: string | null;
   expiresAt: number | null;
   refreshExpiresAt: number | null;
   refreshedAt: number | null;
@@ -26,10 +28,13 @@ export interface AppStatus {
   version: string;
 }
 
+export type OAuthEdition = "cn" | "ai";
+
 export interface OAuthStartResult {
   loginId: string;
   verificationUri: string;
   expiresIn: number;
+  edition?: OAuthEdition;
 }
 
 export interface OAuthPollResult {
@@ -129,10 +134,11 @@ export interface TravelConfig {
   enabled: boolean;
 }
 
-export type TravelStatusLabel = "untraveled" | "no-buddy" | "traveling" | "finished";
+export type TravelStatusLabel = "untraveled" | "no-buddy" | "traveling" | "finished" | "unsupported-platform";
 
 export interface TravelStatus {
   label: TravelStatusLabel;
+  supported?: boolean;
   rewardCredit: number | null;
   locationName?: string | null;
   arriveAt?: number | null;
