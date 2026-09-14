@@ -36,7 +36,7 @@ jobs:
       - name: Verify installer
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" -Filter "*-x64-setup.exe" | Select-Object -First 1
+          $installer = Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release/bundle/nsis" -Filter "*-x64-setup.exe" | Select-Object -First 1
           if ($null -eq $installer) { throw "Windows NSIS installer not found" }
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
           "installer=$($installer.FullName)"
@@ -46,5 +46,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: workbuddy-switch-windows-x64
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-x64-setup.exe
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-x64-setup.exe
           if-no-files-found: error
